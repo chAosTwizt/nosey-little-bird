@@ -1,189 +1,233 @@
-let activeTimers = {};
-let lastUnfilledUpdateTs = 0;
+import { pullOrders, DEFAULT_BASE } from "./strobe-api.js";
+import {
+  applyQueueSnapshot,
+  ordersCrossingThreat,
+  markWhistled,
+} from "./queue-monitor.js";
+import { scheduleJsonToCsv } from "./schedule-from-json.js";
 
-chrome.runtime.onMessage.addListener((message, sender) => {
-    // --- LIVE TRACKING LOGIC ---
-    if (message.type === "SIGHTING") {
-        const { view, orders } = message;
-        const seenIds = orders.map(o => o.id);
-        const tabId = sender?.tab?.id;
+const ALARM = "bird-poll";
 
-        if (view === "UNFILLED ORDERS") {
-            lastUnfilledUpdateTs = Date.now();
-            // Feed popup live list immediately
-            chrome.storage.local.set({
-                currentOrders: orders.map(o => ({
-                    id: o.id,
-                    user: o.staff || "??",
-                    status: o.statusText || "UNFILLED"
-                }))
-            });
+let memState = { byId: {}, whistled: {} };
+let backoffUntil = 0;
+let pollTick = 0;
 
-            orders.forEach(order => {
-                if (!activeTimers[order.id]) {
-                    const now = new Date();
-                    activeTimers[order.id] = {
-                        born: now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}),
-                        bornDate: now.toLocaleDateString(),
-                        startTs: Date.now(),
-                        staff: order.staff
-                    };
-                    // HUD_UPSERT only processed on HubSpot pages (content script checks isHubspot)
-                    if (tabId != null) {
-                        chrome.tabs.sendMessage(tabId, {
-                            type: "HUD_UPSERT",
-                            id: order.id,
-                            staff: order.staff,
-                            status: order.statusText || "",
-                            satFor: null,
-                            note: "SEEN",
-                            allowCreate: true,
-                            color: "#00e5ff"
-                        });
-                    }
-                } else if (activeTimers[order.id].staff !== order.staff && order.staff !== "@UNASSIGNED") {
-                    activeTimers[order.id].staff = order.staff;
-                    if (tabId != null) {
-                        chrome.tabs.sendMessage(tabId, { type: "TICKER_LOG", msg: `STAFF UPDATE: ${order.id} -> ${order.staff}` });
-                        chrome.tabs.sendMessage(tabId, {
-                            type: "HUD_UPSERT",
-                            id: order.id,
-                            staff: order.staff,
-                            note: `STAFF -> ${order.staff}`,
-                            color: "#ff9800"
-                        });
-                    }
-                }
-            });
-            for (const id in activeTimers) {
-                if (!seenIds.includes(id) && tabId != null) finalize(id, "TAKEN", null, tabId);
-            }
-        }
-        // If we haven't seen UNFILLED in a bit, clear popup live list
-        else if (Date.now() - lastUnfilledUpdateTs > 7000) {
-            chrome.storage.local.set({ currentOrders: [] });
-        }
+async function ensureOffscreen() {
+  const contexts = await chrome.runtime.getContexts?.({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+  });
+  if (contexts && contexts.length) return;
+  try {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["AUDIO_PLAYBACK"],
+      justification: "Play Bird Alert whistle when orders age past threat",
+    });
+  } catch (_) {
+    /* already exists */
+  }
+}
 
-        // --- THE RETROACTIVE FIX (For Search/Completed pages) ---
-        // If the eye sees orders anywhere else, check if we need to fix old history entries
-        chrome.storage.local.get({ history: [] }, (data) => {
-            let changed = false;
-            const changedEntries = [];
-            const updatedHistory = data.history.map(item => {
-                const match = orders.find(o => o.id === item.id);
-                if (!match) return item;
+async function playWhistle(volume) {
+  await ensureOffscreen();
+  return chrome.runtime.sendMessage({ type: "PLAY_WHISTLE", volume });
+}
 
-                let next = item;
+function setBadge(text, color = "#e91e63") {
+  chrome.action.setBadgeBackgroundColor({ color });
+  chrome.action.setBadgeText({ text: text == null ? "" : String(text) });
+}
 
-                // If we found the order and the stored user was unknown ("??") but now we see a name
-                if (next.user === "??" && match.staff && match.staff !== "@UNASSIGNED") {
-                    changed = true;
-                    chrome.tabs.sendMessage(sender.tab.id, { type: "TICKER_LOG", msg: `HISTORY FIXED: ${item.id.slice(-4)} is ${match.staff}` });
-                    next = { ...next, user: match.staff };
-                }
+async function loadPersistedMonitor() {
+  const data = await chrome.storage.local.get({
+    queueMonitorState: { byId: {}, whistled: {} },
+  });
+  memState = data.queueMonitorState || { byId: {}, whistled: {} };
+}
 
-                // If we see a more specific status text (Pending/Paused/Completed) than what's stored, update it
-                if (match.statusText && match.statusText !== next.status) {
-                    changed = true;
-                    chrome.tabs.sendMessage(sender.tab.id, { type: "TICKER_LOG", msg: `STATUS FIXED: ${item.id.slice(-4)} -> ${match.statusText}` });
-                    next = { ...next, status: match.statusText };
-                }
+async function saveMonitor() {
+  await chrome.storage.local.set({ queueMonitorState: memState });
+}
 
-                if (next !== item) {
-                    changedEntries.push(next);
-                }
+function parseSatSecs(s) {
+  if (!s || typeof s !== "string") return 0;
+  const m =
+    String(s).match(/(\d+)\s*m\s*(\d+)\s*s/i) || String(s).match(/(\d+)/);
+  return m ? (m[2] ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : parseInt(m[1], 10)) : 0;
+}
 
-                return next;
-            });
+async function appendHistoryForRemoved(removedIds, prevById, now) {
+  if (!removedIds.length) return;
+  const data = await chrome.storage.local.get({ history: [] });
+  let history = data.history || [];
+  const newEntries = [];
 
-            if (changed) {
-                chrome.storage.local.set({ history: updatedHistory });
-                if (tabId != null) {
-                    changedEntries.forEach(entry => {
-                        chrome.tabs.sendMessage(tabId, {
-                            type: "HUD_UPSERT",
-                            id: entry.id,
-                            staff: entry.user,
-                            status: entry.status,
-                            satFor: entry.satFor,
-                            note: null
-                        });
-                    });
-                }
-            }
-        });
+  for (const id of removedIds) {
+    const row = prevById[id];
+    if (!row) continue;
+    const entry = {
+      id,
+      user: row.staff || "??",
+      status: "TAKEN",
+      born: new Date(row.firstSeenAt).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+      bornDate: new Date(row.firstSeenAt).toLocaleDateString(),
+      taken: new Date(now).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+      date: new Date(now).toLocaleDateString(),
+      satFor: `${Math.floor((now - row.firstSeenAt) / 60000)}m ${Math.floor(((now - row.firstSeenAt) % 60000) / 1000)}s`,
+      timestamp: now,
+    };
+    const existing = history.find((i) => i.id === id);
+    if (existing && parseSatSecs(entry.satFor) <= parseSatSecs(existing.satFor)) continue;
+    history = history.filter((i) => i.id !== id);
+    newEntries.push(entry);
+  }
 
-        if (view === "PENDING ORDERS") {
-            orders.forEach(order => {
-                if (activeTimers[order.id] && tabId != null) finalize(order.id, "CLAIMED", order.staff, tabId);
-            });
-        }
+  if (newEntries.length) {
+    await chrome.storage.local.set({
+      history: [...newEntries, ...history].slice(0, 5000),
+    });
+  }
+}
 
-        // Stop "time sat" when we see an order in Pending on any view (Unfilled, Search, etc.)
-        const pendingStatus = (s) => (s || "").toLowerCase() === "pending" || (s || "").toLowerCase() === "in progress";
-        orders.forEach(order => {
-            if (pendingStatus(order.statusText) && activeTimers[order.id] && tabId != null) {
-                finalize(order.id, "CLAIMED", order.staff, tabId);
-            }
-        });
+async function pollOnce() {
+  const now = Date.now();
+  if (now < backoffUntil) return;
 
-        // Record the current Paused orders when viewing PAUSED ORDERS in Strobe core/hub
-        // Store orderDateTs (from page) and pausedAt (when first seen as paused) for newest-first sort
-        if (view === "PAUSED ORDERS") {
-            const now = Date.now();
-            chrome.storage.local.get({ pausedOrders: [] }, (data) => {
-                const prev = (data.pausedOrders || []).filter(Boolean);
-                const prevById = new Map(prev.map(p => [p.id, p]));
-                const filtered = orders.filter(o => o.statusText && o.statusText.toLowerCase() === "paused");
-                const paused = filtered.map((o, i) => {
-                    const existing = prevById.get(o.id);
-                    // New orders: last in list = newest, so give higher pausedAt to later index (newest first when sorted desc)
-                    const defaultPausedAt = now - (filtered.length - 1 - i) * 1000;
-                    return {
-                        id: o.id,
-                        staff: o.staff,
-                        status: o.statusText,
-                        orderDateTs: o.orderDateTs ?? existing?.orderDateTs ?? null,
-                        pausedAt: existing?.pausedAt ?? defaultPausedAt
-                    };
-                });
-                chrome.storage.local.set({ pausedOrders: paused });
-            });
-        }
+  const cfg = await chrome.storage.local.get({
+    strobeApiKey: "",
+    strobeApiBase: DEFAULT_BASE,
+    threatLevel: "high",
+    mute: false,
+    volume: 0.5,
+    monitoringPaused: false,
+  });
+
+  if (!cfg.strobeApiKey || cfg.monitoringPaused) {
+    setBadge("!", "#f44");
+    return;
+  }
+
+  try {
+    const unfilled = await pullOrders({
+      apiKey: cfg.strobeApiKey,
+      baseUrl: cfg.strobeApiBase,
+      code: "NEW_OR_PENDING",
+    });
+
+    const prevById = memState.byId || {};
+    const newIds = new Set(unfilled.map((o) => o.id));
+    const removedIds = Object.keys(prevById).filter((id) => !newIds.has(id));
+    if (removedIds.length) {
+      await appendHistoryForRemoved(removedIds, prevById, now);
     }
+
+    memState = applyQueueSnapshot(memState, unfilled, now);
+    const crossing = ordersCrossingThreat(memState, now, cfg.threatLevel);
+    if (crossing.length && !cfg.mute && cfg.threatLevel !== "off") {
+      for (const id of crossing) {
+        chrome.notifications.create(`bird-threat-${id}-${now}`, {
+          type: "basic",
+          iconUrl: "icon.png",
+          title: "Order past threat marker",
+          message: `${id} sitting too long — queue may need help`,
+          priority: 2,
+          requireInteraction: true,
+        });
+      }
+      await playWhistle(cfg.volume);
+      memState = markWhistled(memState, crossing);
+    }
+
+    await chrome.storage.local.set({
+      currentOrders: unfilled.map((o) => ({
+        id: o.id,
+        user: memState.byId[o.id]?.staff || o.staff || "??",
+        status: o.status || "UNFILLED",
+        ageSec: Math.floor((now - (memState.byId[o.id]?.firstSeenAt || now)) / 1000),
+      })),
+      lastPollOkAt: now,
+      lastPollError: "",
+    });
+    setBadge(String(unfilled.length), "#e91e63");
+
+    pollTick += 1;
+    if (pollTick % 2 === 0) {
+      const paused = await pullOrders({
+        apiKey: cfg.strobeApiKey,
+        baseUrl: cfg.strobeApiBase,
+        code: "PAUSED",
+      });
+      await chrome.storage.local.set({
+        pausedOrders: paused.map((o) => ({
+          id: o.id,
+          staff: o.staff || "??",
+          status: "Paused",
+          pausedAt: now,
+        })),
+      });
+    }
+
+    await saveMonitor();
+  } catch (e) {
+    if (e?.code === "RATE_LIMIT") {
+      backoffUntil = Date.now() + 60_000;
+    }
+    await chrome.storage.local.set({
+      lastPollError: String(e?.message || e),
+    });
+    setBadge("!", "#f44");
+  }
+}
+
+chrome.runtime.onInstalled.addListener(async () => {
+  await loadPersistedMonitor();
+  chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+  pollOnce();
 });
 
-function finalize(id, status, staffOverride, tabId) {
-    const timer = activeTimers[id];
-    if (!timer) return;
-    const now = new Date();
-    const takenTime = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-    const date = now.toLocaleDateString();
-    const entry = {
-        id: id,
-        user: staffOverride || timer.staff,
-        status: status,
-        born: timer.born,
-        bornDate: timer.bornDate || date,
-        taken: takenTime,
-        date: date,
-        satFor: `${Math.floor((Date.now() - timer.startTs) / 60000)}m ${Math.floor(((Date.now() - timer.startTs) % 60000) / 1000)}s`,
-        timestamp: Date.now()
-    };
-    chrome.storage.local.get({ history: [] }, (data) => {
-        const withoutThisId = data.history.filter(i => i.id !== id);
-        const existing = data.history.find(i => i.id === id);
-        if (existing) {
-            const parseSecs = (s) => { if (!s || typeof s !== 'string') return 0; const m = String(s).match(/(\d+)\s*m\s*(\d+)\s*s/i) || String(s).match(/(\d+)/); return m ? (m[2] ? parseInt(m[1],10)*60 + parseInt(m[2],10) : parseInt(m[1],10)) : 0; };
-            const entrySecs = parseSecs(entry.satFor);
-            const existingSecs = parseSecs(existing.satFor);
-            if (entrySecs <= existingSecs) {
-                delete activeTimers[id];
-                return;
-            }
-        }
-        chrome.storage.local.set({ history: [entry, ...withoutThisId].slice(0, 5000) });
-        chrome.tabs.sendMessage(tabId, { type: "LORE_UPDATE", entry: entry });
-        delete activeTimers[id];
-    });
-}
+chrome.runtime.onStartup.addListener(async () => {
+  await loadPersistedMonitor();
+  chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+  pollOnce();
+});
+
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === ALARM) pollOnce();
+});
+
+chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+  if (msg?.type === "FORCE_POLL") {
+    pollOnce().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg?.type === "SCHEDULE_JSON") {
+    chrome.storage.local.set({
+      scheduleJson: msg.data,
+      scheduleCsv: msg.csv,
+      scheduleCachedAt: Date.now(),
+    }).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg?.type === "SCHEDULE_RAW_JSON" && msg.data) {
+    const csv = scheduleJsonToCsv(msg.data);
+    chrome.storage.local.set({
+      scheduleJson: msg.data,
+      scheduleCsv: csv,
+      scheduleCachedAt: Date.now(),
+    }).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+});
+
+// Ensure alarm exists when SW wakes without install/startup events
+loadPersistedMonitor().then(() => {
+  chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+});

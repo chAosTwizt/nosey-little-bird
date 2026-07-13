@@ -353,13 +353,15 @@ function dateOutsideRange(now, minDate, maxDate) {
     return false;
 }
 
-function setOnShiftDisplayFromCsv(csvText, tz) {
+function setOnShiftDisplayFromCsv(csvText, tz, scheduleCachedAt) {
     const el = document.getElementById('onShiftNow');
     if (!el) return;
     tz = tz || SCHEDULE_TZ;
     if (!csvText || !String(csvText).trim()) {
         el.innerHTML = '';
-        el.textContent = '— Set schedule below —';
+        el.textContent = scheduleCachedAt
+            ? '— Set schedule below —'
+            : 'Open strobe.twizt.shop (Access) to refresh';
         el.style.color = '#666';
         el.title = '';
         return;
@@ -405,9 +407,16 @@ function setOnShiftDisplayFromCsv(csvText, tz) {
 }
 
 function refreshOnShiftDisplay() {
-    chrome.storage.local.get({ scheduleCsv: '' }, (data) => {
-        setOnShiftDisplayFromCsv(data.scheduleCsv, SCHEDULE_TZ);
+    chrome.storage.local.get({ scheduleCsv: '', scheduleCachedAt: 0 }, (data) => {
+        setOnShiftDisplayFromCsv(data.scheduleCsv, SCHEDULE_TZ, data.scheduleCachedAt);
     });
+}
+
+function formatAgeSec(sec) {
+    if (sec == null || sec < 0) return '';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}m ${s}s`;
 }
 
 function updateMountainTime() {
@@ -426,7 +435,11 @@ function updateMountainTime() {
 
 function updateUI() {
     updateMountainTime();
-    chrome.storage.local.get({ currentOrders: [], history: [], mute: false, volume: 0.5, threatLevel: 'high', scheduleCsv: '' }, (data) => {
+    chrome.storage.local.get({
+        currentOrders: [], history: [], pausedOrders: [], mute: false, volume: 0.5, threatLevel: 'high',
+        scheduleCsv: '', scheduleCachedAt: 0, strobeApiKey: '', lastPollOkAt: 0, lastPollError: '',
+        monitoringPaused: false
+    }, (data) => {
         const btn = document.getElementById('threatToggle');
 
         // Maintain your Alert Status logic
@@ -441,14 +454,44 @@ function updateUI() {
 
         document.getElementById('volumeSlider').value = data.volume;
 
+        const pollEl = document.getElementById('pollStatus');
+        const pauseEl = document.getElementById('pauseMonitoring');
+        if (pauseEl) pauseEl.checked = !!data.monitoringPaused;
+        if (pollEl) {
+            if (data.monitoringPaused) {
+                pollEl.textContent = data.strobeApiKey
+                    ? 'Paused — API key saved'
+                    : 'Paused — no API key';
+            } else if (data.strobeApiKey) {
+                let status = 'Polling — API key saved';
+                if (data.lastPollOkAt) {
+                    const ago = Math.floor((Date.now() - data.lastPollOkAt) / 1000);
+                    status += ` (${ago < 60 ? `${ago}s ago` : `${Math.floor(ago / 60)}m ago`})`;
+                }
+                if (data.lastPollError) status += ` — ${data.lastPollError}`;
+                pollEl.textContent = status;
+            } else {
+                pollEl.textContent = data.lastPollError ? `No API key — ${data.lastPollError}` : 'No API key';
+            }
+        }
+
         // Display Live Orders from the "Eye"
         document.getElementById('orderList').innerHTML = data.currentOrders.map(order => `
         <div class="item" data-id="${order.id}">
         <span class="id-text">${order.id}</span>
         <span class="user-text">${order.user || "??"}</span>
+        <span class="age-text">${formatAgeSec(order.ageSec)}</span>
         <span class="status-tag ${order.status.toLowerCase()}">${order.status}</span>
         </div>
         `).join('') || '<div style="padding:10px; color:#444;">No live orders</div>';
+
+        document.getElementById('pausedList').innerHTML = (data.pausedOrders || []).map(order => `
+        <div class="item" data-id="${order.id}">
+        <span class="id-text">${order.id}</span>
+        <span class="user-text">${order.user || order.staff || "??"}</span>
+        <span class="status-tag ${(order.status || 'paused').toLowerCase()}">${order.status || 'Paused'}</span>
+        </div>
+        `).join('') || '<div style="padding:10px; color:#444;">No paused orders</div>';
 
         // FIX: Recent History now looks for the new data structure
         const sortedHistory = [...data.history].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -482,12 +525,12 @@ function updateUI() {
         const currentCsv = pasteEl ? pasteEl.value.trim() : '';
         if (pasteEl) {
             if (keepPasteBoxEmpty) {
-                setOnShiftDisplayFromCsv(data.scheduleCsv, SCHEDULE_TZ);
+                setOnShiftDisplayFromCsv(data.scheduleCsv, SCHEDULE_TZ, data.scheduleCachedAt);
             } else if (currentCsv && currentCsv !== storedCsv) {
-                setOnShiftDisplayFromCsv(pasteEl.value, SCHEDULE_TZ);
+                setOnShiftDisplayFromCsv(pasteEl.value, SCHEDULE_TZ, data.scheduleCachedAt);
             } else {
                 pasteEl.value = data.scheduleCsv || '';
-                setOnShiftDisplayFromCsv(data.scheduleCsv, SCHEDULE_TZ);
+                setOnShiftDisplayFromCsv(data.scheduleCsv, SCHEDULE_TZ, data.scheduleCachedAt);
             }
         } else {
             refreshOnShiftDisplay();
@@ -532,6 +575,24 @@ document.getElementById('testAlarm').onclick = () => {
 
 document.getElementById('openHistory').onclick = () => chrome.tabs.create({url: 'history.html'});
 
+document.getElementById('apiKeySave').onclick = () => {
+    const key = document.getElementById('apiKeyInput').value.trim();
+    chrome.storage.local.set({ strobeApiKey: key }, () => {
+        document.getElementById('apiKeyInput').value = '';
+        chrome.runtime.sendMessage({ type: 'FORCE_POLL' }, updateUI);
+    });
+};
+document.getElementById('apiKeyClear').onclick = () => {
+    chrome.storage.local.set({ strobeApiKey: '' }, updateUI);
+};
+document.getElementById('forcePoll').onclick = () => {
+    chrome.runtime.sendMessage({ type: 'FORCE_POLL' }, updateUI);
+};
+
+document.getElementById('pauseMonitoring').onchange = (e) => {
+    chrome.storage.local.set({ monitoringPaused: e.target.checked }, updateUI);
+};
+
 document.getElementById('scheduleSave').onclick = () => {
     const newPaste = document.getElementById('schedulePaste').value.trim();
     chrome.storage.local.get({ scheduleCsv: '' }, (data) => {
@@ -549,7 +610,7 @@ document.getElementById('scheduleSave').onclick = () => {
             const pasteEl = document.getElementById('schedulePaste');
             if (pasteEl) pasteEl.value = '';
             keepPasteBoxEmpty = true;
-            setOnShiftDisplayFromCsv(mergedCsv, SCHEDULE_TZ);
+            setOnShiftDisplayFromCsv(mergedCsv, SCHEDULE_TZ, 0);
         });
     });
 };
@@ -558,7 +619,7 @@ document.getElementById('scheduleSave').onclick = () => {
     const pasteEl = document.getElementById('schedulePaste');
     let debounceTimer = null;
     function updateFromTextarea() {
-        if (pasteEl) setOnShiftDisplayFromCsv(pasteEl.value, SCHEDULE_TZ);
+        if (pasteEl) setOnShiftDisplayFromCsv(pasteEl.value, SCHEDULE_TZ, 0);
     }
     if (pasteEl) {
         pasteEl.addEventListener('input', () => {
@@ -579,9 +640,13 @@ updateUI();
 chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
     const keys = Object.keys(changes || {});
-    if (keys.some(k => ["currentOrders", "history", "mute", "volume", "threatLevel", "scheduleCsv"].includes(k))) {
+    if (keys.some(k => [
+        "currentOrders", "pausedOrders", "history", "mute", "volume", "threatLevel",
+        "scheduleCsv", "scheduleCachedAt", "strobeApiKey", "lastPollOkAt", "lastPollError",
+        "monitoringPaused"
+    ].includes(k))) {
         updateUI();
-        if (keys.some(k => k === "scheduleCsv")) refreshOnShiftDisplay();
+        if (keys.some(k => k === "scheduleCsv" || k === "scheduleCachedAt")) refreshOnShiftDisplay();
     }
 });
 // Keep a slow poll as a safety net
