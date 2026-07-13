@@ -40,6 +40,17 @@
   <div class="label" style="margin-top:0; margin-bottom:4px;">Current time (Mountain)</div>
   <div id="mountainTime" class="mountain-time" style="font-size:13px; font-weight:bold; color:#888; margin-bottom:15px;"></div>
 
+  <div class="vol-box" id="apiKeyBox">
+    <div class="label" style="margin-top:0">Strobe Hub API key</div>
+    <input id="apiKeyInput" type="password" placeholder="Paste API key" style="width:100%;box-sizing:border-box;padding:6px;background:#111;color:#eee;border:1px solid #444;border-radius:4px;margin-top:4px" />
+    <div class="vol-row" style="margin-top:8px">
+      <button id="apiKeySave" class="test-btn">Save</button>
+      <button id="apiKeyClear" class="test-btn">Clear</button>
+      <button id="forcePoll" class="test-btn">Poll now</button>
+    </div>
+    <div id="pollStatus" class="label" style="margin-top:6px;text-transform:none;color:#888"></div>
+  </div>
+
   <div class="vol-box">
     <div class="label" style="margin-top:0">Alarm Volume</div>
     <div class="vol-row">
@@ -65,6 +76,9 @@
 
   <div class="label">Current Orders</div>
   <div class="order-box" id="orderList"></div>
+
+  <div class="label">Paused (API)</div>
+  <div class="order-box" id="pausedList"></div>
 
   <div class="label">Recent History</div>
   <div class="order-box" id="recentList"></div>
