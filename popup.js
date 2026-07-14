@@ -536,7 +536,7 @@ function formatAgeSec(sec) {
     return `${m}m ${s}s`;
 }
 
-const QUEUE_STALE_SEC = 240; // 4 minutes
+const QUEUE_STALE_SEC = 900; // 15 minutes — matches toolbar red flash
 
 function formatQueueAgeMins(ageSec) {
     const mins = Math.max(0, Math.floor((ageSec || 0) / 60));
@@ -562,7 +562,7 @@ function updateQueueCount(orders) {
     }
     el.innerHTML = `${count}<span class="queue-age">at ${formatQueueAgeMins(maxAge)}</span>`;
     el.title = stale
-        ? `Oldest order has sat ${formatQueueAgeMins(maxAge)} (4+ min alert)`
+        ? `Oldest order has sat ${formatQueueAgeMins(maxAge)} (15+ min — red flash)`
         : `Oldest order in queue: ${formatQueueAgeMins(maxAge)}`;
 }
 
@@ -616,9 +616,20 @@ function updateUI() {
             btn.innerText = "BIRD ALERT: OFF";
             btn.className = "status-btn off";
         } else {
-            const levelText = data.threatLevel === 'high' ? 'HIGH (4m)' : data.threatLevel === 'medium' ? 'MED (6m)' : 'LOW (8m)';
+            const levelText =
+                data.threatLevel === 'high' ? 'HIGH (4m)'
+                : data.threatLevel === 'medium' ? 'MED (6m)'
+                : data.threatLevel === 'low' ? 'LOW (8m)'
+                : data.threatLevel === 'one' ? '1 ORDER'
+                : 'HIGH (4m)';
+            const levelClass = ['high', 'medium', 'low', 'one'].includes(data.threatLevel)
+                ? data.threatLevel
+                : 'high';
             btn.innerText = `BIRD ALERT: ${levelText}`;
-            btn.className = `status-btn ${data.threatLevel}`;
+            btn.className = `status-btn ${levelClass}`;
+            btn.title = data.threatLevel === 'one'
+                ? 'Alert as soon as any unfilled order appears (slow / night shifts)'
+                : 'Alert when an order sits past this wait time';
         }
 
         document.getElementById('volumeSlider').value = data.volume;
@@ -738,7 +749,8 @@ document.getElementById('threatToggle').onclick = () => {
         if (d.mute) { nextT = 'high'; nextM = false; }
         else if (d.threatLevel === 'high') nextT = 'medium';
         else if (d.threatLevel === 'medium') nextT = 'low';
-        else nextM = true;
+        else if (d.threatLevel === 'low') nextT = 'one';
+        else nextM = true; // one (or unknown) → OFF
         chrome.storage.local.set({ threatLevel: nextT, mute: nextM }, updateUI);
     });
 };

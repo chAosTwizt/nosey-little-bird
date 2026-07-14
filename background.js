@@ -3,16 +3,20 @@ import {
   applyQueueSnapshot,
   ordersCrossingThreat,
   markWhistled,
+  queueHasLongWait,
 } from "./queue-monitor.js";
 import { scheduleJsonToCsv } from "./schedule-from-json.js";
 import { resolveAlertSrc, DEFAULT_ALERT_SOUND } from "./alert-sounds.js";
 import { FEATURES } from "./build-profile.js";
+import { LONG_WAIT_SECONDS } from "./strobe-api.js";
 
 const ALARM = "bird-poll";
 
 let memState = { byId: {}, whistled: {} };
 let backoffUntil = 0;
 let pollTick = 0;
+let iconFlashOn = false;
+let iconFlashWanted = false;
 
 async function ensureOffscreen() {
   const contexts = await chrome.runtime.getContexts?.({
@@ -52,6 +56,50 @@ async function playWhistle(volume) {
 function setBadge(text, color = "#e91e63") {
   chrome.action.setBadgeBackgroundColor({ color });
   chrome.action.setBadgeText({ text: text == null ? "" : String(text) });
+}
+
+async function setToolbarIcon(alertStyle) {
+  try {
+    await chrome.action.setIcon({
+      path: alertStyle ? "icon-alert.png" : "icon.png",
+    });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+async function setIconFlash(active) {
+  if (active === iconFlashWanted) return;
+  iconFlashWanted = active;
+  if (!active) {
+    iconFlashOn = false;
+    try {
+      await chrome.runtime.sendMessage({ type: "STOP_ICON_FLASH" });
+    } catch (_) {
+      /* offscreen may be gone */
+    }
+    await setToolbarIcon(false);
+    return;
+  }
+  await ensureOffscreen();
+  try {
+    await chrome.runtime.sendMessage({ type: "START_ICON_FLASH" });
+  } catch (_) {
+    /* retry next poll */
+  }
+}
+
+async function onIconFlashTick() {
+  if (!iconFlashWanted) return;
+  iconFlashOn = !iconFlashOn;
+  await setToolbarIcon(iconFlashOn);
+  try {
+    await chrome.action.setBadgeBackgroundColor({
+      color: iconFlashOn ? "#ff1744" : "#7f0000",
+    });
+  } catch (_) {
+    /* ignore */
+  }
 }
 
 async function loadPersistedMonitor() {
@@ -173,10 +221,12 @@ async function pollOnce() {
 
   if (cfg.monitoringPaused) {
     setBadge("");
+    setIconFlash(false);
     return;
   }
   if (!cfg.strobeApiKey) {
     setBadge("!", "#f44");
+    setIconFlash(false);
     return;
   }
 
@@ -195,14 +245,18 @@ async function pollOnce() {
     }
 
     memState = applyQueueSnapshot(memState, unfilled, now);
-    const crossing = ordersCrossingThreat(memState, now, cfg.threatLevel);
-    if (crossing.length && !cfg.mute && cfg.threatLevel !== "off") {
+    const threat = cfg.mute ? "off" : cfg.threatLevel;
+    const crossing = ordersCrossingThreat(memState, now, threat);
+    if (crossing.length && threat !== "off") {
+      const isOne = threat === "one";
       for (const id of crossing) {
         chrome.notifications.create(`bird-threat-${id}-${now}`, {
           type: "basic",
           iconUrl: "icon.png",
-          title: "Order past threat marker",
-          message: `${id} sitting too long - queue may need help`,
+          title: isOne ? "Order in queue" : "Order past threat marker",
+          message: isOne
+            ? `${id} — 1-order / slow-shift alert`
+            : `${id} sitting too long - queue may need help`,
           priority: 2,
           requireInteraction: true,
         });
@@ -221,7 +275,11 @@ async function pollOnce() {
       lastPollOkAt: now,
       lastPollError: "",
     });
-    setBadge(String(unfilled.length), "#e91e63");
+
+    const longWait = queueHasLongWait(memState, now, LONG_WAIT_SECONDS);
+    const badgeColor = longWait ? "#ff1744" : "#e91e63";
+    setBadge(String(unfilled.length), badgeColor);
+    await setIconFlash(longWait && unfilled.length > 0);
 
     pollTick += 1;
     if (pollTick % 2 === 0) {
@@ -249,6 +307,7 @@ async function pollOnce() {
       lastPollError: String(e?.message || e),
     });
     setBadge("!", "#f44");
+    await setIconFlash(false);
   }
 }
 
@@ -272,6 +331,10 @@ chrome.alarms.onAlarm.addListener((a) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+  if (msg?.type === "ICON_FLASH_TICK") {
+    onIconFlashTick().finally(() => sendResponse({ ok: true }));
+    return true;
+  }
   if (msg?.type === "PING") {
     sendResponse({ ok: true });
     return false;
@@ -399,8 +462,10 @@ chrome.runtime.onConnect.addListener((port) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (Object.prototype.hasOwnProperty.call(changes, "monitoringPaused")) {
-    if (changes.monitoringPaused?.newValue) setBadge("");
-    else pollOnce().catch(() => {});
+    if (changes.monitoringPaused?.newValue) {
+      setBadge("");
+      setIconFlash(false);
+    } else pollOnce().catch(() => {});
   }
   if (!changes.birdSearchRequest?.newValue) return;
   const req = changes.birdSearchRequest.newValue;

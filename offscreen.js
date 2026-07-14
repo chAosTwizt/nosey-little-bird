@@ -1,4 +1,30 @@
+let flashTimer = null;
+
+function stopFlash() {
+  if (flashTimer) {
+    clearInterval(flashTimer);
+    flashTimer = null;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "START_ICON_FLASH") {
+    stopFlash();
+    flashTimer = setInterval(() => {
+      chrome.runtime.sendMessage({ type: "ICON_FLASH_TICK" }).catch(() => {
+        stopFlash();
+      });
+    }, 700);
+    chrome.runtime.sendMessage({ type: "ICON_FLASH_TICK" }).catch(() => {});
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.type === "STOP_ICON_FLASH") {
+    stopFlash();
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (msg?.type !== "PLAY_ALERT" && msg?.type !== "PLAY_WHISTLE") return;
 
   const vol = Math.min(2, Math.max(0, Number(msg.volume) || 0.5));

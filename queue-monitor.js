@@ -40,6 +40,15 @@ export function ordersCrossingThreat(state, nowMs, threatLevel) {
   return out;
 }
 
+/** True if any tracked unfilled order has sat >= seconds (default 15m). */
+export function queueHasLongWait(state, nowMs, seconds = 900) {
+  const needMs = seconds * 1000;
+  for (const row of Object.values(state.byId || {})) {
+    if (nowMs - row.firstSeenAt >= needMs) return true;
+  }
+  return false;
+}
+
 export function markWhistled(state, ids) {
   const whistled = { ...(state.whistled || {}) };
   for (const id of ids) whistled[id] = true;

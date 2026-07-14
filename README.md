@@ -15,8 +15,6 @@ This repo is the **staff build** — the version you load and share with the tea
 | **Who’s on shift** | After schedule is cached (visit schedule site once, or paste CSV). |
 | **HubSpot HUD** (dark inbox tint, orange order IDs, optional HUD search / paused list) | Only while a HubSpot **live-messages** tab is open. Closing HubSpot closes the HUD. |
 
-There is **no HubSpot chat API** in this extension. Inbox helpers only run while HubSpot is open.
-
 This build does **not** grow a local order history list (no Bird Brain / Previous).
 
 ---
@@ -46,10 +44,10 @@ Default output: `~/Documents/nosey-little-bird-staff`. Share **that** folder (or
 ## First-time setup
 
 1. Click the bird toolbar icon → **⚙ Settings**.
-2. Paste your **personal Strobe Hub API key** → **Save**.  
+2. Get your personal API key from [Strobe Hub settings](https://strobe.gg/core/settings), paste it → **Save**.  
    - Accepts `strb_…` or a bare 40-character hex (auto-prefixed).  
    - Use **your own** key. Do not share keys in chat, screenshots, or git.
-3. Set **BIRD ALERT** on the main popup: HIGH (4m) / MED (6m) / LOW (8m), or mute. Click the button to cycle.
+3. Set **BIRD ALERT** on the main popup: HIGH (4m) / MED (6m) / LOW (8m) / **1 ORDER** (any new unfilled order), or mute. Click the button to cycle.
 4. (Optional) Pick an **alert sound** and volume; use **TEST**.
 5. Open the schedule site once while logged in (Cloudflare Access), so the bird can cache who’s on shift. Or paste schedule CSV in Settings → Schedule → Save.
 6. On HubSpot live messages, turn on the HUD pieces you want (search on HUD, paused list, dark mode).
@@ -64,6 +62,8 @@ Default output: `~/Documents/nosey-little-bird-staff`. Share **that** folder (or
 
 - Badge = count of unfilled orders from the API (empty when monitoring is paused).
 - Main popup: local time, on-duty names, queue count.
+- **BIRD ALERT** cycles: HIGH (4m) → MED (6m) → LOW (8m) → **1 ORDER** (alert when any unfilled order appears — good for slow nights) → OFF.
+- Toolbar icon **flashes red** when any unfilled order has sat **15+ minutes** (popup queue count flashes too).
 - Enable **Show search in popup** to look up an order ID without HubSpot.
 - Optional lists: Pending / Paused.
 

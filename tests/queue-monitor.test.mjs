@@ -4,8 +4,10 @@ import {
   applyQueueSnapshot,
   ordersCrossingThreat,
   markWhistled,
+  queueHasLongWait,
   THREAT_SECONDS,
 } from "../queue-monitor.js";
+import { LONG_WAIT_SECONDS } from "../strobe-api.js";
 
 let state = { byId: {}, whistled: {} };
 const t0 = 1_000_000;
@@ -31,4 +33,16 @@ assert.deepEqual(
 
 state = applyQueueSnapshot(state, [], t0 + 5000);
 assert.equal(state.byId.A, undefined);
+
+// 1-order mode: whistle as soon as an order is seen
+state = applyQueueSnapshot({ byId: {}, whistled: {} }, [{ id: "N", createdAtMs: null }], t0);
+assert.deepEqual(ordersCrossingThreat(state, t0, "one"), ["N"]);
+state = markWhistled(state, ["N"]);
+assert.deepEqual(ordersCrossingThreat(state, t0 + 60_000, "one"), []);
+
+// 15m long-wait flash gate
+state = applyQueueSnapshot({ byId: {}, whistled: {} }, [{ id: "L", createdAtMs: null }], t0);
+assert.equal(queueHasLongWait(state, t0 + (LONG_WAIT_SECONDS - 1) * 1000), false);
+assert.equal(queueHasLongWait(state, t0 + LONG_WAIT_SECONDS * 1000), true);
+
 console.log("queue-monitor tests ok");

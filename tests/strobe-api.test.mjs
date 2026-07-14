@@ -28,6 +28,7 @@ assert.equal(orders[0].status, "NEW");
 assert.equal(THREAT_SECONDS.high, 240);
 assert.equal(THREAT_SECONDS.medium, 360);
 assert.equal(THREAT_SECONDS.low, 480);
+assert.equal(THREAT_SECONDS.one, 0);
 
 const searched = normalizeSearchOrders({
   success: true,

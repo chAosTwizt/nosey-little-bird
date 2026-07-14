@@ -1,5 +1,7 @@
 // strobe-api.js
-export const THREAT_SECONDS = { high: 240, medium: 360, low: 480 };
+export const THREAT_SECONDS = { high: 240, medium: 360, low: 480, one: 0 };
+/** Toolbar icon / queue count flash when any unfilled order sits this long */
+export const LONG_WAIT_SECONDS = 900; // 15 minutes
 export const DEFAULT_BASE = "https://strobe.gg";
 
 /** Strip accidental "Bearer " / normalize Hub keys (often need strb_ prefix). */
