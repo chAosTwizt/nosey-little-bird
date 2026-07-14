@@ -17,13 +17,21 @@ Chrome / Brave extension for Strobe Hub queue alerts, order lookup, who’s on s
 
 ## Install
 
-1. Download or clone this folder.
+Get the **latest** build (look for **⚙** next to BIRD ALERT — that’s the current UI):
+
+1. Download the newest release ZIP:  
+   **https://github.com/chAosTwizt/nosey-little-bird/releases/latest**  
+   → **Source code (zip)** → unzip  
+   Or clone/`git pull` the `main` branch.
 2. Open `chrome://extensions` or `brave://extensions`.
 3. Turn on **Developer mode**.
-4. **Load unpacked** → select this folder (the one with `manifest.json`).
+4. **Load unpacked** → select the unzipped folder that contains `manifest.json`  
+   (often named `nosey-little-bird-main` or `nosey-little-bird-2.2.x`).
 5. Pin the bird icon if you want the badge visible.
 
-**After an update:** Reload the extension on that page, then refresh any open HubSpot tab.
+**Wrong / old build:** if you see “Current time (Mountain)” and the API key on the front screen with no ⚙, remove that extension and install from **Latest** above.
+
+**After an update:** remove or Reload the old load-unpacked folder, load the new files, then refresh HubSpot.
 
 ---
 
