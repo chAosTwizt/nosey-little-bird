@@ -2,6 +2,7 @@ import { pullOrders, searchOrders, zeroOhVariants, normalizeApiKey, DEFAULT_BASE
 import {
   applyQueueSnapshot,
   ordersCrossingThreat,
+  ordersForOneAlert,
   markWhistled,
   queueHasLongWait,
 } from "./queue-monitor.js";
@@ -16,6 +17,8 @@ let backoffUntil = 0;
 let pollTick = 0;
 let iconFlashOn = false;
 let iconFlashWanted = false;
+/** Last threatLevel seen — detect switch into 1-ORDER so existing queue can ping once. */
+let lastThreatLevel = null;
 
 async function ensureOffscreen() {
   const contexts = await chrome.runtime.getContexts?.({
@@ -40,11 +43,15 @@ async function playAlertSound(volume) {
     alertSoundCustom: "",
   });
   const src = resolveAlertSrc(cfg.alertSoundId, cfg.alertSoundCustom);
-  return chrome.runtime.sendMessage({
-    type: "PLAY_ALERT",
-    volume,
-    src,
-  });
+  try {
+    return await chrome.runtime.sendMessage({
+      type: "PLAY_ALERT",
+      volume,
+      src,
+    });
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
 }
 
 /** @deprecated name kept for older call sites */
@@ -247,7 +254,15 @@ async function pollOnce() {
 
     memState = applyQueueSnapshot(memState, waiting, now);
     const threat = cfg.mute ? "off" : cfg.threatLevel;
-    const crossing = ordersCrossingThreat(memState, now, threat);
+    const switchedIntoOne =
+      threat === "one" && lastThreatLevel != null && lastThreatLevel !== "one";
+    lastThreatLevel = threat;
+
+    const crossing =
+      threat === "one"
+        ? ordersForOneAlert(memState, prevById, switchedIntoOne)
+        : ordersCrossingThreat(memState, now, threat);
+
     if (crossing.length && threat !== "off") {
       const isOne = threat === "one";
       for (const id of crossing) {
@@ -262,8 +277,23 @@ async function pollOnce() {
           requireInteraction: true,
         });
       }
-      await playWhistle(cfg.volume);
+      let soundOk = false;
+      let soundErr = "";
+      try {
+        const sr = await playWhistle(cfg.volume);
+        soundOk = !!(sr && sr.ok !== false);
+        if (sr && sr.error) soundErr = String(sr.error);
+      } catch (e) {
+        soundErr = String(e?.message || e);
+      }
       memState = markWhistled(memState, crossing);
+      await chrome.storage.local.set({
+        lastBirdAlertAt: now,
+        lastBirdAlertIds: crossing,
+        lastBirdAlertMode: threat,
+        lastBirdAlertSoundOk: soundOk,
+        lastBirdAlertSoundError: soundErr,
+      });
     }
 
     await chrome.storage.local.set({

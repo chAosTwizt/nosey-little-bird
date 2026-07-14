@@ -40,6 +40,19 @@ export function ordersCrossingThreat(state, nowMs, threatLevel) {
   return out;
 }
 
+/**
+ * 1-ORDER mode: alert on IDs that just entered the waiting queue this poll
+ * (or any not-yet-whistled ID if the operator just switched into 1-ORDER).
+ */
+export function ordersForOneAlert(state, prevById, forceAllUnwhistled) {
+  const out = [];
+  for (const id of Object.keys(state.byId || {})) {
+    if (state.whistled?.[id]) continue;
+    if (forceAllUnwhistled || !prevById?.[id]) out.push(id);
+  }
+  return out;
+}
+
 /** True if any tracked unfilled order has sat >= seconds (default 15m). */
 export function queueHasLongWait(state, nowMs, seconds = 900) {
   const needMs = seconds * 1000;

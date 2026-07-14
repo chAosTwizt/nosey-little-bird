@@ -604,6 +604,7 @@ function updateUI() {
     chrome.storage.local.get({
         currentOrders: [], history: [], pausedOrders: [], mute: false, volume: 0.5, threatLevel: 'high',
         scheduleCsv: '', scheduleJson: null, scheduleCachedAt: 0, scheduleCacheError: '', strobeApiKey: '', lastPollOkAt: 0, lastPollError: '',
+        lastBirdAlertAt: 0, lastBirdAlertIds: [], lastBirdAlertMode: '', lastBirdAlertSoundOk: null, lastBirdAlertSoundError: '',
         monitoringPaused: false, hubspotDarkMode: true,
         showPendingList: false, showPausedList: false, showPreviousList: false,
         showHudPaused: false, showPopupSearch: false, showHudSearch: true,
@@ -649,6 +650,24 @@ function updateUI() {
             } else {
                 schedStatus.style.color = '#888';
                 schedStatus.textContent = 'Schedule not loaded yet — open strobe.twizt.shop';
+            }
+        }
+
+        const lastAlertEl = document.getElementById('lastAlertStatus');
+        if (lastAlertEl) {
+            if (data.lastBirdAlertAt) {
+                const ago = Math.floor((Date.now() - data.lastBirdAlertAt) / 1000);
+                const when = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.floor(ago / 60)}m ago` : `${Math.floor(ago / 3600)}h ago`;
+                const mode = data.lastBirdAlertMode || '?';
+                const ids = (data.lastBirdAlertIds || []).slice(0, 3).join(', ') || '(no id)';
+                const soundBit = data.lastBirdAlertSoundOk === false
+                    ? ` · sound failed${data.lastBirdAlertSoundError ? `: ${data.lastBirdAlertSoundError}` : ''}`
+                    : data.lastBirdAlertSoundOk ? ' · sound ok' : '';
+                lastAlertEl.style.color = data.lastBirdAlertSoundOk === false ? '#f44' : '#888';
+                lastAlertEl.textContent = `Last alert ${when} (${mode}): ${ids}${soundBit}`;
+            } else {
+                lastAlertEl.style.color = '#666';
+                lastAlertEl.textContent = 'No Bird Alert fired yet this session';
             }
         }
 
@@ -1153,6 +1172,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     if (keys.some(k => [
         "currentOrders", "pausedOrders", "history", "mute", "volume", "threatLevel",
         "scheduleCsv", "scheduleCachedAt", "scheduleJson", "scheduleCacheError", "strobeApiKey", "lastPollOkAt", "lastPollError",
+        "lastBirdAlertAt", "lastBirdAlertIds", "lastBirdAlertMode", "lastBirdAlertSoundOk",
         "monitoringPaused", "showPopupSearch"
     ].includes(k))) {
         updateUI();
