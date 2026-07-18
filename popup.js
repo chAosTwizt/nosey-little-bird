@@ -613,6 +613,20 @@ function showSettingsView() {
     document.getElementById('openSettings')?.classList.add('active');
 }
 
+function renderUpdateBanner(pending) {
+    const banner = document.getElementById('updateBanner');
+    const text = document.getElementById('updateBannerText');
+    if (!banner) return;
+    if (pending?.version) {
+        banner.classList.add('show');
+        if (text) {
+            text.textContent = `v${pending.version} is ready. Update downloads the staff zip — then unzip over your bird folder and Reload.`;
+        }
+    } else {
+        banner.classList.remove('show');
+    }
+}
+
 function updateUI() {
     updateLocalTime();
     applyBuildUi();
@@ -622,11 +636,13 @@ function updateUI() {
         lastBirdAlertAt: 0, lastBirdAlertIds: [], lastBirdAlertMode: '', lastBirdAlertSoundOk: null, lastBirdAlertSoundError: '',
         monitoringPaused: false, hubspotDarkMode: true,
         pollIntervalSec: DEFAULT_POLL_INTERVAL_SEC,
+        pendingUpdate: null,
         showPendingList: false, showPausedList: false, showPreviousList: false,
         showHudPaused: false, showPopupSearch: false, showHudSearch: true,
         alertSoundId: DEFAULT_ALERT_SOUND, alertSoundCustom: ''
     }, (data) => {
         fillPollIntervalSelect(data.pollIntervalSec);
+        renderUpdateBanner(data.pendingUpdate);
         const btn = document.getElementById('threatToggle');
 
         // Maintain your Alert Status logic
@@ -894,6 +910,39 @@ document.getElementById('openHistory')?.addEventListener('click', () => {
 
 document.getElementById('openSettings')?.addEventListener('click', showSettingsView);
 document.getElementById('closeSettings')?.addEventListener('click', showMainView);
+
+document.getElementById('updateAccept')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'APPLY_PENDING_UPDATE' }, () => updateUI());
+});
+document.getElementById('updateDismiss')?.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'DISMISS_PENDING_UPDATE' }, () => updateUI());
+});
+document.getElementById('checkUpdateBtn')?.addEventListener('click', () => {
+    const el = document.getElementById('updateCheckStatus');
+    if (el) {
+        el.style.color = '#888';
+        el.textContent = 'Checking GitHub…';
+    }
+    chrome.runtime.sendMessage({ type: 'CHECK_UPDATE_NOW' }, (resp) => {
+        const err = chrome.runtime.lastError?.message;
+        if (el) {
+            if (err || !resp?.ok) {
+                el.style.color = '#f44';
+                el.textContent = err || resp?.error || 'Check failed';
+            } else if (resp.pendingUpdate?.version) {
+                el.style.color = '#ff9800';
+                el.textContent = `Update available: v${resp.pendingUpdate.version}`;
+            } else if (resp.error) {
+                el.style.color = '#f44';
+                el.textContent = resp.error;
+            } else {
+                el.style.color = '#4caf50';
+                el.textContent = 'You are on the latest staff build';
+            }
+        }
+        updateUI();
+    });
+});
 
 document.getElementById('apiKeySave').onclick = async () => {
     const raw = document.getElementById('apiKeyInput').value.trim();

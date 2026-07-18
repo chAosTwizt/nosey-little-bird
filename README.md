@@ -54,6 +54,7 @@ Staff keep Brave (or Chrome) running. Each person pastes their own Strobe Hub AP
 - **1 ORDER** = alert once when a waiting order shows up (handy on slow nights). Already-seen orders stay quiet until they leave and come back — cycle the button back to **1 ORDER** to re-arm a ping for what’s in queue now.
 - Red flash = something has sat **15+ minutes**
 - Queue alerts keep working with the Strobe page closed (alerts are for the Hub queue, not HubSpot)
+- **Updates:** when Brave starts (or you Reload the extension), the bird checks GitHub once for a newer staff zip. If one exists, you’ll get a prompt — **Update** downloads it; unzip over your bird folder and Reload. Settings → **Check for update** runs that check manually.
 
 ---
 

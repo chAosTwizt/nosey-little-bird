@@ -13,8 +13,10 @@ import {
   normalizePollIntervalSec,
   pollIntervalNeedsOffscreen,
 } from "./poll-cadence.js";
+import { fetchLatestRelease } from "./self-update.js";
 
 const ALARM = "bird-poll";
+const UPDATE_NOTIF = "bird-self-update";
 
 let memState = { byId: {}, whistled: {} };
 let backoffUntil = 0;
@@ -419,6 +421,88 @@ async function pollOnce(opts = {}) {
   }
 }
 
+async function sessionGet(key) {
+  try {
+    if (chrome.storage.session) {
+      const d = await chrome.storage.session.get({ [key]: false });
+      return d[key];
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function sessionSet(obj) {
+  try {
+    if (chrome.storage.session) await chrome.storage.session.set(obj);
+  } catch (_) {}
+}
+
+/** Once per browser session: check GitHub latest staff zip; ask before downloading. */
+async function checkForUpdateOnce() {
+  if (await sessionGet("updateChecked")) return;
+  await sessionSet({ updateChecked: true });
+
+  const cfg = await chrome.storage.local.get({ githubUpdateToken: "" });
+  const result = await fetchLatestRelease({ token: cfg.githubUpdateToken });
+  await chrome.storage.local.set({
+    lastUpdateCheckAt: Date.now(),
+    lastUpdateCheckError: result.ok ? "" : result.error || "check failed",
+    lastUpdateCheckCurrent: result.current || chrome.runtime.getManifest().version,
+  });
+
+  if (!result.ok || !result.update) {
+    await chrome.storage.local.set({ pendingUpdate: null });
+    return;
+  }
+
+  await chrome.storage.local.set({ pendingUpdate: result.update });
+  try {
+    await chrome.notifications.create(UPDATE_NOTIF, {
+      type: "basic",
+      iconUrl: "icon.png",
+      title: "Nosey Little Bird update",
+      message: `v${result.update.version} is available (you have v${result.current}). Update?`,
+      buttons: [{ title: "Update" }, { title: "Not now" }],
+      requireInteraction: true,
+      priority: 2,
+    });
+  } catch (_) {
+    /* buttons unsupported — popup banner still shows */
+  }
+}
+
+async function dismissPendingUpdate() {
+  await chrome.storage.local.set({ pendingUpdate: null });
+  try {
+    await chrome.notifications.clear(UPDATE_NOTIF);
+  } catch (_) {}
+}
+
+async function applyPendingUpdate() {
+  const data = await chrome.storage.local.get({ pendingUpdate: null });
+  const u = data.pendingUpdate;
+  if (!u?.zipUrl) return { ok: false, error: "No pending update" };
+
+  try {
+    const downloadId = await chrome.downloads.download({
+      url: u.zipUrl,
+      filename: u.zipName || `nosey-little-bird-${u.version}-staff.zip`,
+      saveAs: false,
+    });
+    await chrome.storage.local.set({
+      lastUpdateDownload: { ...u, downloadId, at: Date.now() },
+      pendingUpdate: null,
+    });
+    try {
+      await chrome.notifications.clear(UPDATE_NOTIF);
+    } catch (_) {}
+    await chrome.tabs.create({ url: chrome.runtime.getURL("update.html") });
+    return { ok: true, downloadId };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async (details) => {
   await loadPersistedMonitor();
   if (!FEATURES.birdBrain) {
@@ -437,12 +521,26 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
   await syncPollCadence();
   pollOnce({ force: true });
+  checkForUpdateOnce().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await loadPersistedMonitor();
   await syncPollCadence();
   pollOnce({ force: true });
+  checkForUpdateOnce().catch(() => {});
+});
+
+chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
+  if (id !== UPDATE_NOTIF) return;
+  if (buttonIndex === 0) applyPendingUpdate().catch(() => {});
+  else dismissPendingUpdate().catch(() => {});
+});
+
+chrome.notifications.onClicked.addListener((id) => {
+  if (id !== UPDATE_NOTIF) return;
+  // Open popup-facing path: show update page isn't enough — force apply prompt via storage; user uses popup banner.
+  chrome.action.openPopup?.().catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
@@ -471,6 +569,26 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
       .get({ volume: 0.5 })
       .then((cfg) => playAlertSound(cfg.volume))
       .then((r) => sendResponse(r && r.ok !== false && !r.error ? { ok: true } : { ok: false, error: r?.error || "play failed" }))
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+    return true;
+  }
+  if (msg?.type === "APPLY_PENDING_UPDATE") {
+    applyPendingUpdate()
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+    return true;
+  }
+  if (msg?.type === "DISMISS_PENDING_UPDATE") {
+    dismissPendingUpdate()
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+    return true;
+  }
+  if (msg?.type === "CHECK_UPDATE_NOW") {
+    sessionSet({ updateChecked: false })
+      .then(() => checkForUpdateOnce())
+      .then(() => chrome.storage.local.get({ pendingUpdate: null, lastUpdateCheckError: "" }))
+      .then((d) => sendResponse({ ok: true, pendingUpdate: d.pendingUpdate, error: d.lastUpdateCheckError }))
       .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
@@ -644,4 +762,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // Ensure alarm + cadence when SW wakes without install/startup events
-loadPersistedMonitor().then(() => syncPollCadence());
+loadPersistedMonitor().then(() => {
+  syncPollCadence();
+  // SW restarts mid-session don't re-check; onStartup/onInstalled cover "starting Brave".
+});

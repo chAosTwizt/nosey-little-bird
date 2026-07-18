@@ -88,10 +88,26 @@
     .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .settings-head h2 { margin: 0; font-size: 14px; color: #ff9800; }
     .back-btn { background: transparent; border: 1px solid #444; color: #ccc; border-radius: 4px; padding: 6px 10px; cursor: pointer; font-size: 11px; }
+    .update-banner {
+      display: none; margin-bottom: 10px; padding: 8px 10px; border: 1px solid #ff9800; border-radius: 4px;
+      background: #1a1408; font-size: 11px; line-height: 1.35;
+    }
+    .update-banner.show { display: block; }
+    .update-banner .ub-title { color: #ff9800; font-weight: bold; margin-bottom: 4px; }
+    .update-banner .ub-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .update-banner .ub-actions button { flex: 1; }
   </style>
 </head>
 <body>
   <div id="mainView">
+    <div id="updateBanner" class="update-banner" role="status">
+      <div class="ub-title">Update available</div>
+      <div id="updateBannerText" class="muted">A newer bird build is ready.</div>
+      <div class="ub-actions">
+        <button type="button" id="updateAccept" class="test-btn">Update</button>
+        <button type="button" id="updateDismiss" class="test-btn">Not now</button>
+      </div>
+    </div>
     <div class="top-row">
       <button id="threatToggle" class="status-btn high">BIRD ALERT: HIGH (4m)</button>
       <button id="openSettings" class="cog-btn" title="Settings" aria-label="Settings">⚙</button>
@@ -158,6 +174,10 @@
       </div>
       <div id="pollStatus" class="label" style="margin-top:6px;text-transform:none;color:#888"></div>
       <div id="lastAlertStatus" class="label" style="margin-top:4px;text-transform:none;color:#666"></div>
+      <div class="vol-row" style="margin-top:8px">
+        <button id="checkUpdateBtn" class="test-btn" type="button">Check for update</button>
+      </div>
+      <div id="updateCheckStatus" class="label" style="margin-top:4px;text-transform:none;color:#666"></div>
       <div class="label" style="margin-top:10px">Queue check speed</div>
       <select id="pollIntervalSelect" style="width:100%;box-sizing:border-box;padding:6px 8px;background:#111;color:#eee;border:1px solid #444;border-radius:4px;font-size:11px;margin-top:4px"></select>
       <p style="font-size:10px;color:#666;margin:6px 0 0;line-height:1.35;text-transform:none">
