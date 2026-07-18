@@ -119,3 +119,10 @@ PY
 mkdir -p "$(dirname "$OUT")"
 rsync -a --delete "$TMP/" "$OUT/"
 echo "Done: $OUT"
+
+# Brave load-unpacked path on Black (staff bird) — keep in sync so releases aren't "GitHub only"
+LIVE_STAFF="${NOSY_LIVE_STAFF:-/home/chaos/Documents/nosey-little-bird-v2.0.0}"
+if [[ "$PROFILE" == "staff" && -d "$LIVE_STAFF" ]]; then
+  rsync -a --delete "$OUT/" "$LIVE_STAFF/"
+  echo "Synced live Brave folder: $LIVE_STAFF"
+fi

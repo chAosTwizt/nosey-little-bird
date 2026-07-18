@@ -22,7 +22,7 @@ Staff keep Brave (or Chrome) running. Each person pastes their own Strobe Hub AP
 ## Install
 
 1. Download **`nosey-little-bird-*-staff.zip`** from  
-   **[Latest release](https://github.com/chAosTwizt/nosey-little-bird/releases/latest)**  
+   **[Latest release](https://github.com/TWIZT-SHOP/nosey-little-bird/releases/latest)**  
    (the named zip — **not** “Source code”) → unzip
 2. Open `brave://extensions` or `chrome://extensions`
 3. Turn on **Developer mode**
