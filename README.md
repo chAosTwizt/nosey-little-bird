@@ -14,7 +14,7 @@ Staff keep Brave (or Chrome) running. Each person pastes their own Strobe Hub AP
 
 - **Background queue watch** — badge = unfilled count; desktop alert + sound when Strobe orders age past your Bird Alert level (Strobe page does not need to stay open)
 - **Your key, your browser** — each person uses their own Hub API key from settings
-- **HubSpot helpers** (when live messages is open) — dark mode, one-click copy for order IDs / dodo codes, optional lookup HUD — not HubSpot alerts
+- **HubSpot helpers** (when live messages is open) — dark mode, one-click copy for order IDs / dodo codes, optional [Bird HUD](docs/STAFF-GUIDE.md#bird-hud-hubspot) lookup — not HubSpot alerts
 - **Who’s on shift** — unlock strobe.twizt.shop once; bird refreshes the schedule about every 4 hours. If Access needs a new code, it tells you the bird can’t fly without it
 
 ---

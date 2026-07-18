@@ -46,6 +46,19 @@ Tap the big button to cycle. Color changes with the mode.
 
 ---
 
+## Bird HUD (HubSpot)
+
+When HubSpot live messages is open, the bird can show a small **BIRD HUD** for order lookup (Settings → **Show search on HubSpot HUD**).
+
+![Bird HUD — order lookup on HubSpot](guide-bird-hud.png)
+
+- Paste an order ID (or partial) → **GO**
+- Status line shows result (e.g. COMPLETE) and the matched ID
+- Note text is from the Hub order — handy without leaving the chat
+- This is a **helper**, not HubSpot alerts; queue alerts still come from the bird icon / API key
+
+---
+
 ## Settings — API key & queue watch
 
 Gear → Settings. Paste **your own** Hub key (don’t share it).
