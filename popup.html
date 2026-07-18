@@ -108,6 +108,14 @@
         <button type="button" id="updateDismiss" class="test-btn">Not now</button>
       </div>
     </div>
+    <div id="scheduleUnlockBanner" class="update-banner" role="status">
+      <div class="ub-title">Bird can't fly without the schedule code</div>
+      <div class="muted">Open strobe.twizt.shop, enter the Access code / sign in, then who’s-on-shift can refresh.</div>
+      <div class="ub-actions">
+        <button type="button" id="scheduleUnlockOpen" class="test-btn">Open schedule</button>
+        <button type="button" id="scheduleUnlockDismiss" class="test-btn">Dismiss</button>
+      </div>
+    </div>
     <div class="top-row">
       <button id="threatToggle" class="status-btn high">BIRD ALERT: HIGH (4m)</button>
       <button id="openSettings" class="cog-btn" title="Settings" aria-label="Settings">⚙</button>
@@ -251,6 +259,9 @@
         once (same Chrome as the bird) to load who’s on shift, or paste CSV below.
       </p>
       <div id="scheduleStatus" class="label" style="margin:0 0 8px;text-transform:none;color:#888"></div>
+      <div class="vol-row" style="margin-bottom:8px">
+        <button id="refreshScheduleBtn" class="test-btn" type="button">Refresh schedule now</button>
+      </div>
       <div class="schedule-form">
         <div class="vol-row">
           <button id="scheduleSave" class="test-btn">Save</button>

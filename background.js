@@ -14,9 +14,17 @@ import {
   pollIntervalNeedsOffscreen,
 } from "./poll-cadence.js";
 import { fetchLatestRelease } from "./self-update.js";
+import {
+  fetchScheduleJson,
+  SCHEDULE_REFRESH_HOURS,
+  SCHEDULE_SITE_URL,
+  SCHEDULE_STALE_HOURS,
+} from "./schedule-refresh.js";
 
 const ALARM = "bird-poll";
+const SCHEDULE_ALARM = "bird-schedule-refresh";
 const UPDATE_NOTIF = "bird-self-update";
+const SCHEDULE_UNLOCK_NOTIF = "bird-schedule-unlock";
 
 let memState = { byId: {}, whistled: {} };
 let backoffUntil = 0;
@@ -77,6 +85,9 @@ async function syncPollCadence() {
   }
   // Keep 1-min alarm as safety net even when offscreen ticks faster
   chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+  chrome.alarms.create(SCHEDULE_ALARM, {
+    periodInMinutes: Math.max(60, SCHEDULE_REFRESH_HOURS * 60),
+  });
 
   const wantTimer =
     pollIntervalNeedsOffscreen(sec) &&
@@ -92,6 +103,75 @@ async function syncPollCadence() {
   } catch (_) {
     /* offscreen not ready — alarm still polls */
   }
+}
+
+async function notifyScheduleNeedsUnlock(reason) {
+  const data = await chrome.storage.local.get({
+    scheduleUnlockNotifiedAt: 0,
+  });
+  const now = Date.now();
+  // At most one nag per 12 hours
+  if (now - (data.scheduleUnlockNotifiedAt || 0) < 12 * 3600_000) return;
+
+  await chrome.storage.local.set({
+    scheduleNeedsUnlock: true,
+    scheduleCacheError: reason || "Needs Access unlock",
+    scheduleUnlockNotifiedAt: now,
+  });
+
+  try {
+    await chrome.notifications.create(SCHEDULE_UNLOCK_NOTIF, {
+      type: "basic",
+      iconUrl: "icon.png",
+      title: "Bird can't fly without the schedule code",
+      message:
+        "Open strobe.twizt.shop, enter the Access code / sign in, then the bird can refresh who’s on shift.",
+      buttons: [{ title: "Open schedule" }, { title: "Dismiss" }],
+      requireInteraction: true,
+      priority: 2,
+    });
+  } catch (_) {
+    /* popup banner still shows */
+  }
+}
+
+/** Refresh schedule.json using this browser’s Access cookies (if still valid). */
+async function refreshScheduleCache() {
+  const result = await fetchScheduleJson();
+  if (result.ok && result.data) {
+    const csv = scheduleJsonToCsv(result.data);
+    await chrome.storage.local.set({
+      scheduleJson: result.data,
+      scheduleCsv: csv,
+      scheduleCachedAt: Date.now(),
+      scheduleCacheError: "",
+      scheduleNeedsUnlock: false,
+      scheduleUnlockNotifiedAt: 0,
+    });
+    chrome.notifications.clear(SCHEDULE_UNLOCK_NOTIF).catch(() => {});
+    return { ok: true };
+  }
+
+  if (result.needsUnlock) {
+    await notifyScheduleNeedsUnlock(result.error);
+    return { ok: false, needsUnlock: true, error: result.error };
+  }
+
+  const cfg = await chrome.storage.local.get({ scheduleCachedAt: 0 });
+  const ageH =
+    cfg.scheduleCachedAt > 0
+      ? (Date.now() - cfg.scheduleCachedAt) / 3600_000
+      : Infinity;
+  await chrome.storage.local.set({
+    scheduleCacheError: result.error || "Schedule refresh failed",
+    scheduleNeedsUnlock: ageH >= SCHEDULE_STALE_HOURS,
+  });
+  if (ageH >= SCHEDULE_STALE_HOURS) {
+    await notifyScheduleNeedsUnlock(
+      result.error || "Schedule is stale — unlock strobe.twizt.shop"
+    );
+  }
+  return { ok: false, error: result.error };
 }
 
 async function playAlertSound(volume) {
@@ -437,9 +517,15 @@ async function sessionSet(obj) {
   } catch (_) {}
 }
 
-/** Once per browser session: check GitHub latest staff zip; ask before downloading. */
-async function checkForUpdateOnce() {
-  if (await sessionGet("updateChecked")) return;
+/**
+ * Check GitHub for a newer staff zip.
+ * @param {{ force?: boolean }} [opts] force=true skips the once-per-session gate (Settings button).
+ */
+async function checkForUpdateOnce(opts = {}) {
+  const force = !!opts.force;
+  if (!force && (await sessionGet("updateChecked"))) {
+    return { ok: true, skipped: true };
+  }
   await sessionSet({ updateChecked: true });
 
   const cfg = await chrome.storage.local.get({ githubUpdateToken: "" });
@@ -452,7 +538,12 @@ async function checkForUpdateOnce() {
 
   if (!result.ok || !result.update) {
     await chrome.storage.local.set({ pendingUpdate: null });
-    return;
+    return {
+      ok: result.ok,
+      pendingUpdate: null,
+      error: result.ok ? "" : result.error || "check failed",
+      current: result.current,
+    };
   }
 
   await chrome.storage.local.set({ pendingUpdate: result.update });
@@ -469,6 +560,12 @@ async function checkForUpdateOnce() {
   } catch (_) {
     /* buttons unsupported — popup banner still shows */
   }
+  return {
+    ok: true,
+    pendingUpdate: result.update,
+    error: "",
+    current: result.current,
+  };
 }
 
 async function dismissPendingUpdate() {
@@ -522,6 +619,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await syncPollCadence();
   pollOnce({ force: true });
   checkForUpdateOnce().catch(() => {});
+  refreshScheduleCache().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -529,22 +627,37 @@ chrome.runtime.onStartup.addListener(async () => {
   await syncPollCadence();
   pollOnce({ force: true });
   checkForUpdateOnce().catch(() => {});
+  refreshScheduleCache().catch(() => {});
 });
 
 chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
-  if (id !== UPDATE_NOTIF) return;
-  if (buttonIndex === 0) applyPendingUpdate().catch(() => {});
-  else dismissPendingUpdate().catch(() => {});
+  if (id === UPDATE_NOTIF) {
+    if (buttonIndex === 0) applyPendingUpdate().catch(() => {});
+    else dismissPendingUpdate().catch(() => {});
+    return;
+  }
+  if (id === SCHEDULE_UNLOCK_NOTIF) {
+    if (buttonIndex === 0) {
+      chrome.tabs.create({ url: SCHEDULE_SITE_URL }).catch(() => {});
+    } else {
+      chrome.notifications.clear(SCHEDULE_UNLOCK_NOTIF).catch(() => {});
+    }
+  }
 });
 
 chrome.notifications.onClicked.addListener((id) => {
-  if (id !== UPDATE_NOTIF) return;
-  // Open popup-facing path: show update page isn't enough — force apply prompt via storage; user uses popup banner.
-  chrome.action.openPopup?.().catch(() => {});
+  if (id === UPDATE_NOTIF) {
+    chrome.action.openPopup?.().catch(() => {});
+    return;
+  }
+  if (id === SCHEDULE_UNLOCK_NOTIF) {
+    chrome.tabs.create({ url: SCHEDULE_SITE_URL }).catch(() => {});
+  }
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM) pollOnce();
+  if (a.name === SCHEDULE_ALARM) refreshScheduleCache().catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
@@ -585,10 +698,40 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     return true;
   }
   if (msg?.type === "CHECK_UPDATE_NOW") {
-    sessionSet({ updateChecked: false })
-      .then(() => checkForUpdateOnce())
-      .then(() => chrome.storage.local.get({ pendingUpdate: null, lastUpdateCheckError: "" }))
-      .then((d) => sendResponse({ ok: true, pendingUpdate: d.pendingUpdate, error: d.lastUpdateCheckError }))
+    (async () => {
+      try {
+        const r = await checkForUpdateOnce({ force: true });
+        if (r?.skipped) {
+          const d = await chrome.storage.local.get({
+            pendingUpdate: null,
+            lastUpdateCheckError: "",
+          });
+          sendResponse({
+            ok: true,
+            pendingUpdate: d.pendingUpdate,
+            error: d.lastUpdateCheckError,
+          });
+          return;
+        }
+        sendResponse({
+          ok: !!r?.ok,
+          pendingUpdate: r?.pendingUpdate ?? null,
+          error: r?.error || "",
+          current: r?.current,
+        });
+      } catch (e) {
+        try {
+          sendResponse({ ok: false, error: String(e?.message || e) });
+        } catch (_) {
+          /* port already gone */
+        }
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "REFRESH_SCHEDULE_NOW") {
+    refreshScheduleCache()
+      .then((r) => sendResponse(r))
       .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }

@@ -46,9 +46,20 @@ export async function fetchLatestRelease(opts = {}) {
 
   let res;
   try {
-    res = await fetch(UPDATE_API, { headers });
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 12_000);
+    try {
+      res = await fetch(UPDATE_API, { headers, signal: ctrl.signal });
+    } finally {
+      clearTimeout(t);
+    }
   } catch (e) {
-    return { ok: false, current, error: String(e?.message || e) };
+    const msg = String(e?.message || e);
+    return {
+      ok: false,
+      current,
+      error: /abort/i.test(msg) ? "GitHub check timed out" : msg,
+    };
   }
   if (!res.ok) {
     return {

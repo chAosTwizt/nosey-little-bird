@@ -3,11 +3,46 @@
   const DELAY_MS = 1500;
   let inFlight = false;
 
+  function onAccessWall() {
+    const title = String(document.title || "");
+    const html = String(document.documentElement?.innerText || "").slice(0, 2000);
+    return /cloudflare\s*access|sign in/i.test(title) || /cloudflare\s*access/i.test(html);
+  }
+
+  function markNeedsUnlock(reason) {
+    try {
+      chrome.storage.local.set({
+        scheduleNeedsUnlock: true,
+        scheduleCacheError: reason || "Needs Access unlock",
+      });
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   async function tryFetchSchedule() {
+    if (onAccessWall()) {
+      return {
+        needsUnlock: true,
+        error: "Schedule page needs a new Access code / sign-in",
+      };
+    }
     try {
       const url = new URL("/schedule.json", location.origin).href;
       const res = await fetch(url, { credentials: "include", cache: "no-store" });
-      if (!res.ok) return { error: `HTTP ${res.status}` };
+      const ct = res.headers.get("content-type") || "";
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          return { needsUnlock: true, error: `HTTP ${res.status}` };
+        }
+        return { error: `HTTP ${res.status}` };
+      }
+      if (ct.includes("text/html")) {
+        return {
+          needsUnlock: true,
+          error: "Schedule page needs a new Access code / sign-in",
+        };
+      }
       const data = await res.json();
       if (!data?.weeks) return { error: "missing weeks" };
       return { data };
@@ -25,6 +60,7 @@
             scheduleJson: data,
             scheduleCachedAt: Date.now(),
             scheduleCacheError: "",
+            scheduleNeedsUnlock: false,
           },
           () => {
             void chrome.runtime.lastError;
@@ -58,6 +94,10 @@
           }
           return;
         }
+        if (result.needsUnlock) {
+          markNeedsUnlock(result.error);
+          return;
+        }
         if (i === MAX_TRIES - 1) {
           try {
             chrome.storage.local.set({
@@ -72,6 +112,10 @@
     } finally {
       inFlight = false;
     }
+  }
+
+  if (onAccessWall()) {
+    markNeedsUnlock("Schedule page needs a new Access code / sign-in");
   }
 
   await cacheSchedule();

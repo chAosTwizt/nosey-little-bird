@@ -627,6 +627,12 @@ function renderUpdateBanner(pending) {
     }
 }
 
+function renderScheduleUnlockBanner(needsUnlock) {
+    const banner = document.getElementById('scheduleUnlockBanner');
+    if (!banner) return;
+    banner.classList.toggle('show', !!needsUnlock);
+}
+
 function updateUI() {
     updateLocalTime();
     applyBuildUi();
@@ -637,12 +643,14 @@ function updateUI() {
         monitoringPaused: false, hubspotDarkMode: true,
         pollIntervalSec: DEFAULT_POLL_INTERVAL_SEC,
         pendingUpdate: null,
+        scheduleNeedsUnlock: false,
         showPendingList: false, showPausedList: false, showPreviousList: false,
         showHudPaused: false, showPopupSearch: false, showHudSearch: true,
         alertSoundId: DEFAULT_ALERT_SOUND, alertSoundCustom: ''
     }, (data) => {
         fillPollIntervalSelect(data.pollIntervalSec);
         renderUpdateBanner(data.pendingUpdate);
+        renderScheduleUnlockBanner(data.scheduleNeedsUnlock);
         const btn = document.getElementById('threatToggle');
 
         // Maintain your Alert Status logic
@@ -672,11 +680,14 @@ function updateUI() {
 
         const schedStatus = document.getElementById('scheduleStatus');
         if (schedStatus) {
-            if (data.scheduleCachedAt) {
+            if (data.scheduleNeedsUnlock) {
+                schedStatus.style.color = '#f44';
+                schedStatus.textContent = "Bird can't fly without the schedule code — open strobe.twizt.shop and sign in";
+            } else if (data.scheduleCachedAt) {
                 const ago = Math.floor((Date.now() - data.scheduleCachedAt) / 1000);
                 const when = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.floor(ago / 60)}m ago` : `${Math.floor(ago / 3600)}h ago`;
                 schedStatus.style.color = '#4caf50';
-                schedStatus.textContent = `Schedule loaded (${when})`;
+                schedStatus.textContent = `Schedule loaded (${when}) · auto-refresh ~every 4h`;
             } else if (data.scheduleCacheError) {
                 schedStatus.style.color = '#f44';
                 schedStatus.textContent = `Schedule not loaded — ${data.scheduleCacheError}`;
@@ -917,6 +928,73 @@ document.getElementById('updateAccept')?.addEventListener('click', () => {
 document.getElementById('updateDismiss')?.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'DISMISS_PENDING_UPDATE' }, () => updateUI());
 });
+document.getElementById('scheduleUnlockOpen')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: 'https://strobe.twizt.shop/' });
+});
+document.getElementById('scheduleUnlockDismiss')?.addEventListener('click', () => {
+    chrome.storage.local.set({ scheduleNeedsUnlock: false }, updateUI);
+});
+document.getElementById('refreshScheduleBtn')?.addEventListener('click', () => {
+    const el = document.getElementById('scheduleStatus');
+    if (el) {
+        el.style.color = '#888';
+        el.textContent = 'Refreshing schedule…';
+    }
+    chrome.runtime.sendMessage({ type: 'REFRESH_SCHEDULE_NOW' }, (resp) => {
+        if (el && resp && !resp.ok) {
+            el.style.color = '#f44';
+            el.textContent = resp.needsUnlock
+                ? "Bird can't fly without the schedule code — open strobe.twizt.shop"
+                : (resp.error || 'Refresh failed');
+        }
+        updateUI();
+    });
+});
+function showUpdateCheckResult(el, resp, portErr) {
+    if (!el) return;
+    if (portErr && !resp) {
+        // SW often dies mid-fetch; read whatever it already wrote.
+        chrome.storage.local.get(
+            {
+                pendingUpdate: null,
+                lastUpdateCheckError: "",
+                lastUpdateCheckAt: 0,
+            },
+            (d) => {
+                if (d.pendingUpdate?.version) {
+                    el.style.color = '#ff9800';
+                    el.textContent = `Update available: v${d.pendingUpdate.version}`;
+                } else if (d.lastUpdateCheckError) {
+                    el.style.color = '#f44';
+                    el.textContent = d.lastUpdateCheckError;
+                } else if (d.lastUpdateCheckAt && Date.now() - d.lastUpdateCheckAt < 30_000) {
+                    el.style.color = '#4caf50';
+                    el.textContent = 'You are on the latest staff build';
+                } else {
+                    el.style.color = '#f44';
+                    el.textContent = 'Update check interrupted — try again';
+                }
+                updateUI();
+            }
+        );
+        return;
+    }
+    if (portErr || (resp && resp.ok === false && resp.error)) {
+        el.style.color = '#f44';
+        el.textContent = portErr || resp?.error || 'Check failed';
+    } else if (resp?.pendingUpdate?.version) {
+        el.style.color = '#ff9800';
+        el.textContent = `Update available: v${resp.pendingUpdate.version}`;
+    } else if (resp?.error) {
+        el.style.color = '#f44';
+        el.textContent = resp.error;
+    } else {
+        el.style.color = '#4caf50';
+        el.textContent = 'You are on the latest staff build';
+    }
+    updateUI();
+}
+
 document.getElementById('checkUpdateBtn')?.addEventListener('click', () => {
     const el = document.getElementById('updateCheckStatus');
     if (el) {
@@ -924,23 +1002,14 @@ document.getElementById('checkUpdateBtn')?.addEventListener('click', () => {
         el.textContent = 'Checking GitHub…';
     }
     chrome.runtime.sendMessage({ type: 'CHECK_UPDATE_NOW' }, (resp) => {
-        const err = chrome.runtime.lastError?.message;
-        if (el) {
-            if (err || !resp?.ok) {
-                el.style.color = '#f44';
-                el.textContent = err || resp?.error || 'Check failed';
-            } else if (resp.pendingUpdate?.version) {
-                el.style.color = '#ff9800';
-                el.textContent = `Update available: v${resp.pendingUpdate.version}`;
-            } else if (resp.error) {
-                el.style.color = '#f44';
-                el.textContent = resp.error;
-            } else {
-                el.style.color = '#4caf50';
-                el.textContent = 'You are on the latest staff build';
-            }
+        const err = chrome.runtime.lastError?.message || '';
+        const portClosed = /message port closed|Receiving end does not exist/i.test(err);
+        if (portClosed) {
+            // Give SW a moment to finish writing storage, then show real result.
+            setTimeout(() => showUpdateCheckResult(el, null, err), 400);
+            return;
         }
-        updateUI();
+        showUpdateCheckResult(el, resp, err);
     });
 });
 
@@ -1250,7 +1319,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     const keys = Object.keys(changes || {});
     if (keys.some(k => [
         "currentOrders", "pausedOrders", "history", "mute", "volume", "threatLevel",
-        "scheduleCsv", "scheduleCachedAt", "scheduleJson", "scheduleCacheError", "strobeApiKey", "lastPollOkAt", "lastPollError",
+        "scheduleCsv", "scheduleCachedAt", "scheduleJson", "scheduleCacheError", "scheduleNeedsUnlock", "strobeApiKey", "lastPollOkAt", "lastPollError",
+        "pendingUpdate",
         "lastBirdAlertAt", "lastBirdAlertIds", "lastBirdAlertMode", "lastBirdAlertSoundOk",
         "monitoringPaused", "showPopupSearch"
     ].includes(k))) {
